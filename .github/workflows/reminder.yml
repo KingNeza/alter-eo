@@ -1,0 +1,26 @@
+name: Resumen diario (remind)
+
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: telegram-bot-proyectos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python bot.py remind
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          TIMEZONE: America/Mexico_City
+          DUE_SOON_DAYS: "2"
