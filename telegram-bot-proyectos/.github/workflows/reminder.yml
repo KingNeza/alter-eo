@@ -1,1 +1,24 @@
+name: Resumen diario (remind)
 
+on:
+  schedule:
+    # 08:00 en CDMX = 14:00 UTC (CDMX es UTC-6, sin horario de verano desde 2022)
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python bot.py remind
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          TIMEZONE: America/Mexico_City
+          DUE_SOON_DAYS: "2"
