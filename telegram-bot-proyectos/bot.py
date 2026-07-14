@@ -17,6 +17,7 @@ GOOGLE_CREDENTIALS, TIMEZONE, DUE_SOON_DAYS.
 import os
 import sys
 import json
+import time
 import logging
 import datetime as dt
 from zoneinfo import ZoneInfo
@@ -31,10 +32,12 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 log = logging.getLogger("bot-proyectos")
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
-TIMEZONE = os.environ.get("TIMEZONE", "America/Mexico_City")
+BOT_TOKEN = os.environ["BOT_TOKEN"].strip()
+SPREADSHEET_ID = os.environ["SPREADSHEET_ID"].strip()
+TIMEZONE = os.environ.get("TIMEZONE", "America/Mexico_City").strip()
 DUE_SOON_DAYS = int(os.environ.get("DUE_SOON_DAYS", "2"))
+REMIND_HOUR = int(os.environ.get("DAILY_HOUR", "8"))     # hora del resumen diario
+LISTEN_MINUTES = int(os.environ.get("LISTEN_MINUTES", "50"))  # duración de cada corrida
 TZ = ZoneInfo(TIMEZONE)
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -61,11 +64,13 @@ def tg_send(chat_id, text):
         log.warning("Error enviando a %s: %s", chat_id, e)
 
 
-def tg_get_updates(offset):
-    params = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
+def tg_get_updates(offset, timeout=0):
+    # timeout>0 = long polling: la petición espera hasta 'timeout' seg a que
+    # llegue un mensaje y responde en cuanto llega (respuesta casi instantánea).
+    params = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
     if offset:
         params["offset"] = offset
-    r = requests.get(f"{API}/getUpdates", params=params, timeout=40)
+    r = requests.get(f"{API}/getUpdates", params=params, timeout=timeout + 15)
     r.raise_for_status()
     return r.json().get("result", [])
 
@@ -76,7 +81,12 @@ def tg_get_updates(offset):
 def _get_credentials():
     raw = os.environ.get("GOOGLE_CREDENTIALS")
     if raw:
-        return json.loads(raw)
+        raw = raw.strip().lstrip("﻿")   # quita espacios/saltos/BOM
+        try:
+            return json.loads(raw)           # caso 1: JSON pegado tal cual
+        except json.JSONDecodeError:
+            import base64                     # caso 2: JSON en base64
+            return json.loads(base64.b64decode(raw).decode("utf-8"))
     path = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -416,14 +426,75 @@ def run_remind():
         tg_send(int(chat_id), texto)
 
 
+def _maybe_send_reminder(ws, cfg, chats):
+    """Manda el resumen diario una sola vez al día, pasadas las REMIND_HOUR."""
+    now = dt.datetime.now(TZ)
+    hoy = now.date().isoformat()
+    if now.hour >= REMIND_HOUR and get_config(cfg, "last_reminder") != hoy:
+        texto = build_reminder(read_projects(ws))
+        for chat_id in all_chats(chats):
+            tg_send(int(chat_id), texto)
+        set_config(cfg, "last_reminder", hoy)
+        log.info("Resumen diario enviado (%s)", hoy)
+
+
+def run_listen():
+    """Escucha en vivo ~LISTEN_MINUTES por long-polling: responde en segundos.
+    Al terminar, el workflow se re-lanza para cubrir las 24 h."""
+    ws, cfg, chats = open_sheets()
+    offset = get_config(cfg, "offset")
+    offset = int(offset) if offset and str(offset).strip().isdigit() else None
+
+    fin = time.monotonic() + LISTEN_MINUTES * 60
+    log.info("Escuchando en vivo %d min (offset=%s)", LISTEN_MINUTES, offset)
+
+    while time.monotonic() < fin:
+        try:
+            _maybe_send_reminder(ws, cfg, chats)
+        except Exception:
+            log.exception("Error en el recordatorio")
+
+        try:
+            updates = tg_get_updates(offset, timeout=30)
+        except Exception:
+            log.exception("Error en getUpdates; reintento en 5 s")
+            time.sleep(5)
+            continue
+
+        for upd in updates:
+            offset = upd["update_id"] + 1
+            msg = upd.get("message")
+            if not msg or "text" not in msg:
+                continue
+            chat_id = msg["chat"]["id"]
+            user = msg.get("from", {})
+            nombre = (user.get("first_name", "") + " " +
+                      user.get("last_name", "")).strip()
+            register_chat(chats, chat_id, nombre or user.get("username", ""))
+            try:
+                reply = handle(ws, msg["text"])
+            except Exception as e:
+                log.exception("Error procesando mensaje")
+                reply = f"⚠️ Ocurrió un error: {e}"
+            if reply:
+                tg_send(chat_id, reply)
+
+        if updates:
+            set_config(cfg, "offset", offset)
+
+    log.info("Fin de la corrida; el workflow se relanzará.")
+
+
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "poll"
-    if mode == "poll":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "listen"
+    if mode == "listen":
+        run_listen()
+    elif mode == "poll":
         run_poll()
     elif mode == "remind":
         run_remind()
     else:
-        print("Uso: python bot.py [poll|remind]")
+        print("Uso: python bot.py [listen|poll|remind]")
         sys.exit(1)
 
 
