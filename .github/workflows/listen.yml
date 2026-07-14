@@ -1,0 +1,33 @@
+name: Escucha en vivo (listen)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: listen
+  cancel-in-progress: false
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    defaults:
+      run:
+        working-directory: telegram-bot-proyectos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python bot.py listen
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          TIMEZONE: America/Mexico_City
+          DUE_SOON_DAYS: "2"
+          DAILY_HOUR: "8"
+          LISTEN_MINUTES: "50"
